@@ -1,0 +1,96 @@
+# mcctl 配置文件(TOML)。
+# 优先级:命令行 --config / 环境变量 MCCTL_*  >  本文件  >  内置默认值。
+# 默认位置:$MCCTL_HOME/config.toml;可用 MCCTL_CONFIG 或全局 --config <path> 指定。
+# 查看当前生效值:`mcctl config`
+#
+# 本文件由 `mcctl config --write` 生成:模板里的占位符已替换成当时的生效值。
+# 直接改这里就行;不要某一项时请把**整行**注释掉(参考 [defaults] 末尾两行),
+# 写成 `key = ` 是非法 TOML。
+#@template ---------------------------------------------------------------- 以下仅供维护者阅读
+#@template 本文件是**模板**(mcctl/core/config.template.toml),渲染后才会写出为用户的配置。
+#@template 本段每行以 #@template 开头,渲染时整行丢弃,不会出现在生成的文件里。
+#@template   * 占位符 = 两对花括号包住字段名;正则见 mcctl/core/config.py 的 _PLACEHOLDER_RE。
+#@template   * 带引号的位置填充的是已转义的字符串内容;数字/布尔位置不加引号。
+#@template   * 同一字段名在模板里**只允许出现一次**,注释里也不要写出占位符,
+#@template     否则一样会被替换掉(有测试兜底:test_template_placeholders_appear_exactly_once)。
+#@template   * 单独占行首的占位符([defaults] 末尾两行)在值为空时渲染成注释行,
+#@template     保证生成出来的文件**永远是合法 TOML**(不会出现 `ttl = ` 这种空值)。
+#@template 新增/删除字段时:_EXPECTED_PLACEHOLDERS(tests/test_config.py)与这里要同步改。
+#@template ---------------------------------------------------------------- 维护者说明结束
+
+# 实例域名后缀:连接地址为 <slug>.<domain>:<router.port>
+domain = "{{domain}}"
+
+# 自定义 bridge 网络名(实例与 router 都在这个网络里)
+network = "{{network}}"
+
+# 实例镜像(itzg/minecraft-server)
+server_image = "{{server_image}}"
+
+# 挂载给 mc-router 的 docker socket
+docker_socket = "{{docker_socket}}"
+
+# SQLite 路径。相对路径相对**本文件所在目录**解析。
+db = "{{db}}"
+
+# 存档目录:实例被删除时把数据卷打包成 <slug>.tar.gz 放在这里,
+# 并按 [lifecycle] 的 archive_retention 再保留一段时间。
+# 相对路径相对**本文件所在目录**解析。
+archives = "{{archives}}"
+
+# 打包 / 解包数据卷用的临时 helper 容器镜像(有 tar 就行)
+archive_image = "{{archive_image}}"
+
+[router]
+name = "{{name}}"
+image = "{{image}}"
+# 唯一对宿主机暴露的端口(默认只绑本机回环,不碰公网)
+bind = "{{bind}}"
+port = {{port}}
+# 实例容器内监听端口,一般不用改
+container_port = {{container_port}}
+# router 读取 docker.sock 需要的附加组 GID
+socket_group = "{{socket_group}}"   # 留空 = 自动 stat docker.sock 取属组
+
+[health]
+# 等待实例就绪的超时与轮询间隔(秒)。首次启动要下载服务端 + 生成世界,给足时间。
+timeout = {{timeout}}
+poll_interval = {{poll_interval}}
+
+[api]
+# HTTP 服务(mcctl serve)的密钥,必填:所有接口都要求携带它鉴权。
+#   Authorization: Bearer <key>   或   X-API-Key: <key>
+# 渲染成注释行时表示尚未设置,此时 serve 会拒绝启动(避免无鉴权裸奔)。
+{{api_key_line}}
+# 监听地址。默认只绑本机回环,不对局域网/公网暴露。
+bind = "{{api_bind}}"
+port = {{api_port}}
+# 是否暴露 /docs 与 /openapi.json(Swagger UI)。默认关闭:这两个入口由框架直接提供,
+# 不经过密钥校验(浏览器没法自动带上自定义头),所以只建议内网调试时临时打开。
+docs = {{api_docs}}
+
+[lifecycle]
+# 由 mcctl 管理的实例的自动回收规则,单位分钟(0 = 关闭该规则):
+#   join_grace     创建后这么久内没有玩家加入  → 关停并删除
+#   idle           玩家数持续为 0 达这么久      → 关停并删除
+#   max_lifetime   创建时长超过这么久          → 关停并删除
+#   stopped        被 stop 后一直没启动这么久  → 直接删除
+# 无论哪种方式删除,存档都会额外保留 archive_retention 分钟;
+# 这期间服务器名仍被占用,可以下载存档或用存档重建。
+enabled = {{lifecycle_enabled}}
+join_grace = {{lifecycle_join_grace}}
+idle = {{lifecycle_idle}}
+max_lifetime = {{lifecycle_max_lifetime}}
+stopped = {{lifecycle_stopped}}
+archive_retention = {{lifecycle_archive_retention}}
+# 巡检间隔(秒)
+interval = {{lifecycle_interval}}
+
+[defaults]
+# mcctl create 没有显式传参时使用的默认值
+type = "{{type}}"
+version = "{{version}}"
+memory = "{{memory}}"
+online_mode = {{online_mode}}
+{{ttl_line}}   # 分钟;设置后实例多久没人在线后自动销毁,留空/注释掉表示不设置 TTL
+{{java_line}}   # 例如 "21" 或 "java21-jdk",留空/注释掉表示用镜像自带 Java
