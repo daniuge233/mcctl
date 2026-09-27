@@ -24,7 +24,7 @@ from typing import Any
 
 import docker
 from docker.errors import APIError, ImageNotFound, NotFound
-from docker.models.containers import Container
+from docker.models.containers import Container, ExecResult
 from docker.models.networks import Network
 from docker.models.volumes import Volume
 
@@ -343,13 +343,51 @@ class DockerProvisioner:
             return None
         try:
             # RCON 不开端口,通过容器内 rcon-cli 访问(见规格 §4.3)
-            result = container.exec_run("rcon-cli list")
+            result = self._exec_rcon(container, "list")
         except APIError as exc:  # pragma: no cover - 依赖运行中的容器
             logger.warning("event=rcon.exec.failed name=%s error=%s", handle.container_name, exc)
             return None
-        output = result.output.decode("utf-8", errors="replace") if result.output else ""
-        match = _PLAYER_COUNT.search(output)
+        match = _PLAYER_COUNT.search(self._decode_exec(result))
         return int(match.group(1)) if match else None
+
+    def send_command(self, handle: Handle, command: str) -> str:
+        """通过 ``rcon-cli`` 向运行中的实例发送一条 **游戏指令**, 返回服务端输出。
+
+        指令经 RCON 协议交给 Minecraft 服务端控制台(例如 ``op Steve``), 不是 Docker /
+        Linux 命令。它以**参数列表**形式交给 ``docker exec``(不经过容器内 shell), 因此
+        指令里的 ``$`` / ``;`` / 反引号等字符不会被 shell 解释。
+        """
+        container = self._find_container(handle)
+        if container is None:
+            raise ProvisionError(f"容器 {handle.container_name} 不存在")
+        if container.status != "running":
+            raise ProvisionError(
+                f"实例 {handle.name!r} 未在运行(status={container.status}),无法发送命令"
+            )
+        try:
+            result = self._exec_rcon(container, command)
+        except APIError as exc:
+            raise ProvisionError(f"向 {handle.name!r} 发送命令失败:{exc}") from exc
+        output = self._decode_exec(result)
+        if result.exit_code != 0:
+            raise ProvisionError(
+                f"命令 {command!r} 执行失败(退出码 {result.exit_code}):"
+                f"{output.strip() or '<无输出>'}"
+            )
+        logger.info("event=rcon.command name=%s command=%s", handle.container_name, command)
+        return output
+
+    def _exec_rcon(self, container: Container, command: str) -> ExecResult:
+        """在容器内执行 ``rcon-cli <command>``, 把游戏指令递给服务端(不经 shell)。"""
+        return container.exec_run(["rcon-cli", command])
+
+    @staticmethod
+    def _decode_exec(result: ExecResult) -> str:
+        """把 ``exec_run`` 的输出解码成文本。"""
+        output = result.output
+        if not output:
+            return ""
+        return output.decode("utf-8", errors="replace") if isinstance(output, bytes) else str(output)
 
     # ------------------------------------------------------------ 内部工具
     def _ensure_volume(self, spec: Spec) -> Volume:

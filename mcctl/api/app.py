@@ -43,11 +43,14 @@ from ..provisioners.docker_archive import DockerArchiveStore
 from ..provisioners.docker_p import DockerProvisioner
 from .schemas import (
     ArchiveInfo,
+    CommandRequest,
+    CommandResult,
     CreateServerRequest,
     DeleteResult,
     HealthInfo,
     LifecycleInfo,
     LogsResponse,
+    OpRequest,
     ReapReportModel,
     RestoreRequest,
     ServerInfo,
@@ -204,6 +207,34 @@ def server_logs(
 ) -> LogsResponse:
     """返回实例最近 ``tail`` 行日志。"""
     return LogsResponse(name=name, lines=tail, logs=service.logs(name, tail))
+
+
+# ---------------------------------------------------------------- 游戏指令
+@router.post("/servers/{name}/command", response_model=CommandResult, summary="发送游戏指令")
+def send_command(name: str, payload: CommandRequest, service: ServiceDep) -> CommandResult:
+    """向运行中的游戏服务端发送一条指令, 返回服务端响应。
+
+    指令经容器内 ``rcon-cli`` 通过 RCON 协议交给 Minecraft 服务端控制台(RCON 端口
+    不对外开放), 且以**参数**形式传给 ``docker exec``, 不经容器内 shell, 所以
+    ``;`` / ``$()`` / 反引号都只是普通字符。前导 ``/`` 会被去掉(``/op Steve`` 等价于
+    ``op Steve``)。
+    """
+    command, output = service.send_command(name, payload.command)
+    return CommandResult(name=name, command=command, output=output)
+
+
+@router.post("/servers/{name}/op", response_model=CommandResult, summary="设置玩家 OP")
+def op_player(name: str, payload: OpRequest, service: ServiceDep) -> CommandResult:
+    """把玩家设为管理员(等价于发送游戏指令 ``op <player>``)。"""
+    command, output = service.op(name, payload.player)
+    return CommandResult(name=name, command=command, output=output)
+
+
+@router.post("/servers/{name}/deop", response_model=CommandResult, summary="撤销玩家 OP")
+def deop_player(name: str, payload: OpRequest, service: ServiceDep) -> CommandResult:
+    """撤销玩家的管理员权限(等价于发送游戏指令 ``deop <player>``)。"""
+    command, output = service.deop(name, payload.player)
+    return CommandResult(name=name, command=command, output=output)
 
 
 # ---------------------------------------------------------------- 存档/重建

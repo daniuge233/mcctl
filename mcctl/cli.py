@@ -11,6 +11,8 @@
     mcctl endpoint <name>                       # 本版: <slug>.mc.loc:25565
     mcctl reconcile                             # 对比 DB 与 docker,修正漂移
     mcctl players <name>                        # 通过 rcon-cli 查在线人数
+    mcctl cmd <name> <command...>               # 向游戏服务端发送指令(如 op Steve)
+    mcctl op|deop <name> <player>               # 设置 / 撤销玩家 OP
     mcctl archive list|download|purge <name>     # 存档:列出 / 下载 / 丢弃
     mcctl restore <name>                        # 用存档重建服务器
     mcctl reap                                  # 手动跑一轮生命周期回收(适合 cron)
@@ -428,6 +430,44 @@ def players(name: str = typer.Argument(..., help="实例名称")) -> None:
         typer.secho(f"无法获取 {name} 的在线人数(实例未运行或 RCON 不可用)。", fg=typer.colors.YELLOW)
         return
     typer.echo(f"{name}: {count} 人在线")
+
+
+@app.command()
+def cmd(
+    name: str = typer.Argument(..., help="实例名称"),
+    command: list[str] = typer.Argument(
+        ..., help="游戏指令,例如: op Steve / say hi(可带前导 /,会自动去掉)"
+    ),
+) -> None:
+    """向游戏服务端发送一条指令(经容器内 rcon-cli,不是 Linux 命令)。"""
+    engine = _build_engine()
+    with _errors():
+        output = engine.send_command(name, " ".join(command))
+    typer.echo(output.strip() or "(命令已执行,无输出)")
+
+
+@app.command()
+def op(
+    name: str = typer.Argument(..., help="实例名称"),
+    player: str = typer.Argument(..., help="玩家名(1-16 位字母 / 数字 / 下划线)"),
+) -> None:
+    """把玩家设为管理员(op)。"""
+    engine = _build_engine()
+    with _errors():
+        output = engine.op(name, player)
+    typer.echo(output.strip() or f"已将 {player} 设为 {name} 的管理员")
+
+
+@app.command()
+def deop(
+    name: str = typer.Argument(..., help="实例名称"),
+    player: str = typer.Argument(..., help="玩家名(1-16 位字母 / 数字 / 下划线)"),
+) -> None:
+    """撤销玩家的管理员权限(deop)。"""
+    engine = _build_engine()
+    with _errors():
+        output = engine.deop(name, player)
+    typer.echo(output.strip() or f"已撤销 {player} 在 {name} 上的管理员权限")
 
 
 @app.command()

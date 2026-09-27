@@ -73,6 +73,12 @@ def parse_iso(value: str) -> datetime:
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
+#: 游戏指令的最大长度(防止误把大段文本当成指令发进去)。
+COMMAND_MAX_LENGTH = 512
+
+#: Java 版玩家名:1-16 位字母、数字或下划线。
+_PLAYER_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+
 
 def slugify(value: str) -> str:
     """把实例名转换为可用于 DNS 标签的 slug(小写字母 / 数字 / 连字符)。
@@ -86,6 +92,40 @@ def slugify(value: str) -> str:
     if not slug:
         raise ValueError(f"无法从 {value!r} 生成合法 slug(至少需要一个字母或数字)")
     return slug
+
+
+def normalize_command(value: str) -> str:
+    """规范化要发给游戏服务端的指令(服务端控制台指令, 不是 Linux 命令)。
+
+    * 去掉前导 ``/``(RCON 传输的是不带斜杠的指令, 游戏内聊天框才用 ``/``);
+    * 去掉首尾空白;
+    * 拒绝空指令、超长指令与含换行的指令(换行会被误当成多条指令)。
+
+    Raises:
+        ValueError: 指令为空、过长或含换行符。
+    """
+    command = value.strip()
+    if command.startswith("/"):
+        command = command[1:].lstrip()
+    if not command:
+        raise ValueError("命令不能为空")
+    if len(command) > COMMAND_MAX_LENGTH:
+        raise ValueError(f"命令过长(最多 {COMMAND_MAX_LENGTH} 个字符)")
+    if "\n" in command or "\r" in command:
+        raise ValueError("命令不能包含换行符")
+    return command
+
+
+def validate_player_name(value: str) -> str:
+    """校验 Java 版玩家名(1-16 位字母、数字或下划线)。
+
+    Raises:
+        ValueError: 玩家名不合法。
+    """
+    player = value.strip()
+    if not _PLAYER_NAME_RE.match(player):
+        raise ValueError(f"非法的玩家名 {value!r}:只能包含 1-16 位字母、数字或下划线")
+    return player
 
 
 @dataclass

@@ -20,7 +20,13 @@ from ..core.archive import Archive
 from ..core.config import Config, parse_memory
 from ..core.engine import Engine, InstanceConflict, InstanceNotFound
 from ..core.lifecycle import Reaper
-from ..core.models import CreateRequest, Instance, State
+from ..core.models import (
+    CreateRequest,
+    Instance,
+    State,
+    normalize_command,
+    validate_player_name,
+)
 from .schemas import CreateServerRequest, ReapReportModel, RestoreRequest
 
 logger = logging.getLogger(__name__)
@@ -60,6 +66,31 @@ class ServerService:
         """实例日志尾部。"""
         self._require_live(name)
         return self.engine.logs(name, lines)
+
+    # ------------------------------------------------------------------ 游戏指令
+    def send_command(self, name: str, command: str) -> tuple[str, str]:
+        """向游戏服务端发送一条指令, 返回 ``(规范化后的指令, 服务端输出)``。
+
+        Note:
+            这里**不取全局锁**:发指令不改 mcctl 自己的状态, 若取锁, 一条慢指令会把
+            其它实例的 create / delete 一起堵住。副作用是实例刚好被生命周期回收时会
+            报 503(容器已不在运行)。
+        """
+        self._require_live(name)
+        normalized = normalize_command(command)
+        return normalized, self.engine.send_command(name, normalized)
+
+    def op(self, name: str, player: str) -> tuple[str, str]:
+        """把玩家设为 OP,返回 ``(命令, 服务端输出)``。"""
+        self._require_live(name)
+        normalized = validate_player_name(player)
+        return f"op {normalized}", self.engine.op(name, normalized)
+
+    def deop(self, name: str, player: str) -> tuple[str, str]:
+        """撤销玩家的 OP,返回 ``(命令, 服务端输出)``。"""
+        self._require_live(name)
+        normalized = validate_player_name(player)
+        return f"deop {normalized}", self.engine.deop(name, normalized)
 
     def list_archives(self) -> list[Archive]:
         """列出全部存档(按创建时间排序)。"""

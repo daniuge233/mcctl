@@ -94,6 +94,16 @@ class Provisioner(Protocol):
         """通过容器内 ``rcon-cli list`` 返回在线人数;不可用时返回 ``None``。"""
         ...
 
+    def send_command(self, handle: Handle, command: str) -> str:
+        """通过容器内 ``rcon-cli`` 向 **游戏服务端** 发送一条指令, 返回服务端输出。
+
+        传输到的是 Minecraft 服务端控制台(RCON 协议), 不执行 Linux 命令。
+
+        Raises:
+            ProvisionError: 容器不存在 / 未运行, 或指令执行失败。
+        """
+        ...
+
     def ensure_runtime(self) -> None:
         """确保 runtime 前置条件就绪(自定义网络、mc-router 容器)。"""
         ...

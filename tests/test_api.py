@@ -278,6 +278,135 @@ def test_logs_validates_tail_range(bench):
     assert client.get("/servers/test/logs?tail=0", headers=HEADERS).status_code == 422
 
 
+# ------------------------------------------------------------ 游戏指令
+def test_command_endpoint_sends_game_command(bench):
+    """POST /command 把游戏指令转发给服务端,并回显规范化后的指令。"""
+    client, _, provisioner, *_ = bench
+    _create(client)
+    provisioner.command_outputs["test"] = "Broadcasted: hi"
+
+    response = client.post("/servers/test/command", json={"command": "say hi"}, headers=HEADERS)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "name": "test",
+        "command": "say hi",
+        "output": "Broadcasted: hi",
+    }
+    assert provisioner.commands == [("test", "say hi")]
+
+
+def test_command_endpoint_strips_leading_slash(bench):
+    """带前导 / 的游戏指令也能用(内部去掉斜杠,RCON 通道不需要它)。"""
+    client, _, provisioner, *_ = bench
+    _create(client)
+
+    client.post("/servers/test/command", json={"command": "/op Steve"}, headers=HEADERS)
+
+    assert provisioner.commands == [("test", "op Steve")]
+
+
+def test_command_endpoint_rejects_empty_command(bench):
+    """空指令在 pydantic 层就被挡掉(422),不会发出去。"""
+    client, _, provisioner, *_ = bench
+    _create(client)
+
+    response = client.post("/servers/test/command", json={"command": "   "}, headers=HEADERS)
+
+    assert response.status_code == 422
+    assert provisioner.commands == []
+
+
+def test_command_endpoint_rejects_multiline_command(bench):
+    """含换行的指令 → 422(否则会被当成多条指令)。"""
+    client, _, provisioner, *_ = bench
+    _create(client)
+
+    response = client.post(
+        "/servers/test/command", json={"command": "say hi\nsay bye"}, headers=HEADERS
+    )
+
+    assert response.status_code == 422
+    assert provisioner.commands == []
+
+
+def test_command_endpoint_unknown_server_is_404(bench):
+    """实例不存在 → 404。"""
+    client, *_ = bench
+
+    response = client.post("/servers/nope/command", json={"command": "say hi"}, headers=HEADERS)
+
+    assert response.status_code == 404
+
+
+def test_command_endpoint_maps_rcon_failure_to_503(bench):
+    """服务端连不上(RCON 不可用)→ 503。"""
+    client, _, provisioner, *_ = bench
+    _create(client)
+    provisioner.fail_command = True
+
+    response = client.post("/servers/test/command", json={"command": "say hi"}, headers=HEADERS)
+
+    assert response.status_code == 503
+
+
+def test_op_endpoint_sends_op_command(bench):
+    """POST /op 等价于发送 ``op <player>``。"""
+    client, _, provisioner, *_ = bench
+    _create(client)
+    provisioner.command_outputs["test"] = "Made Steve a server operator"
+
+    response = client.post("/servers/test/op", json={"player": "Steve"}, headers=HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["command"] == "op Steve"
+    assert response.json()["output"] == "Made Steve a server operator"
+    assert provisioner.commands == [("test", "op Steve")]
+
+
+def test_deop_endpoint_sends_deop_command(bench):
+    """POST /deop 等价于发送 ``deop <player>``。"""
+    client, _, provisioner, *_ = bench
+    _create(client)
+
+    response = client.post("/servers/test/deop", json={"player": "Steve"}, headers=HEADERS)
+
+    assert response.status_code == 200
+    assert provisioner.commands == [("test", "deop Steve")]
+
+
+@pytest.mark.parametrize("player", ["", "bad name", "a" * 17, "steve;"])
+def test_op_endpoint_rejects_invalid_player(bench, player):
+    """非法玩家名 → 422,不会拼进指令里(防注入)。"""
+    client, _, provisioner, *_ = bench
+    _create(client)
+
+    response = client.post("/servers/test/op", json={"player": player}, headers=HEADERS)
+
+    assert response.status_code == 422
+    assert provisioner.commands == []
+
+
+def test_op_endpoint_unknown_server_is_404(bench):
+    """实例不存在 → 404。"""
+    client, *_ = bench
+
+    response = client.post("/servers/nope/op", json={"player": "Steve"}, headers=HEADERS)
+
+    assert response.status_code == 404
+
+
+def test_command_on_deleted_instance_is_404(bench):
+    """已删除(只剩存档)的实例发指令 → 404。"""
+    client, engine, _, archives, *_ = bench
+    _with_data(engine, archives, "gone")
+    client.delete("/servers/gone", headers=HEADERS)
+
+    response = client.post("/servers/gone/command", json={"command": "say hi"}, headers=HEADERS)
+
+    assert response.status_code == 404
+
+
 # ------------------------------------------------------------ 删除与存档
 def test_delete_server_archives(bench):
     """删除会先归档:响应里带回存档信息与保留时间。"""

@@ -31,7 +31,15 @@ from .archive import Archive, ArchiveError, ArchiveStore, new_archive
 from .config import Config
 from .java import resolve_java
 from .lifecycle import Stats
-from .models import CreateRequest, Instance, State, now_iso, slugify
+from .models import (
+    CreateRequest,
+    Instance,
+    State,
+    normalize_command,
+    now_iso,
+    slugify,
+    validate_player_name,
+)
 from .store import Store
 
 logger = logging.getLogger(__name__)
@@ -137,6 +145,43 @@ class Engine:
     def online_players(self, name: str) -> int | None:
         """返回实例当前在线人数。"""
         return self.provisioner.online_players(self._handle(self._require(name)))
+
+    # ------------------------------------------------------------ 游戏指令
+    def send_command(self, name: str, command: str) -> str:
+        """向游戏服务端发送一条指令, 返回服务端输出。
+
+        ``command`` 可以带前导 ``/``(会被自动去掉), 例如 ``/op Steve``、``say hi``、
+        ``give Steve diamond 64``。指令经 RCON 交给服务端控制台执行。
+
+        Raises:
+            InstanceNotFound: 实例不存在。
+            ValueError: 指令为空 / 过长 / 含换行符。
+            ProvisionError: 实例未运行或指令执行失败。
+        """
+        instance = self._require(name)
+        normalized = normalize_command(command)
+        logger.info("event=command.send name=%s command=%s", instance.name, normalized)
+        return self.provisioner.send_command(self._handle(instance), normalized)
+
+    def op(self, name: str, player: str) -> str:
+        """把玩家设为 OP(等价于向游戏服务端发送 ``op <player>``)。
+
+        Raises:
+            InstanceNotFound: 实例不存在。
+            ValueError: 玩家名不合法。
+            ProvisionError: 实例未运行或指令执行失败。
+        """
+        return self.send_command(name, f"op {validate_player_name(player)}")
+
+    def deop(self, name: str, player: str) -> str:
+        """撤销玩家的 OP(等价于向游戏服务端发送 ``deop <player>``)。
+
+        Raises:
+            InstanceNotFound: 实例不存在。
+            ValueError: 玩家名不合法。
+            ProvisionError: 实例未运行或指令执行失败。
+        """
+        return self.send_command(name, f"deop {validate_player_name(player)}")
 
     # ------------------------------------------------------------ 创建
     def create(self, request: CreateRequest) -> Instance:

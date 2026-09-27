@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from docker.errors import APIError, ImageNotFound
+from docker.errors import APIError, ImageNotFound, NotFound
 
 from mcctl.core.config import Config
 from mcctl.core.java import CONTAINER_JAVA_HOME, resolve_java
-from mcctl.provisioners.base import ProvisionError, Spec
+from mcctl.provisioners.base import Handle, ProvisionError, Spec
 from mcctl.provisioners.docker_p import DockerProvisioner
 
 #: 假镜像自带的 PATH,用于验证自定义 JDK 会被插到最前面
@@ -221,3 +222,138 @@ def test_java_version_does_not_change_env() -> None:
     env = provisioner._server_env(_spec(java=resolve_java("17")), "itzg/minecraft-server")
     assert "JAVA_HOME" not in env
     assert "PATH" not in env
+
+
+# ---------------------------------------------------------------- 游戏指令
+@dataclass
+class _ExecResult:
+    """``container.exec_run`` 的返回值替身。"""
+
+    output: bytes | str | None
+    exit_code: int = 0
+
+
+class _ExecContainer:
+    """可以记录 ``exec_run`` 调用的容器替身。"""
+
+    def __init__(self, status: str = "running", result: _ExecResult | None = None) -> None:
+        self.status = status
+        self.result = result or _ExecResult("There are 0 of a max of 20 players online:")
+        self.calls: list[Any] = []
+
+    def exec_run(self, command: Any) -> _ExecResult:
+        self.calls.append(command)
+        return self.result
+
+
+class _Containers:
+    """``client.containers`` 替身:按名字查表。"""
+
+    def __init__(self, containers: dict[str, _ExecContainer]) -> None:
+        self._containers = containers
+
+    def get(self, name: str) -> _ExecContainer:
+        if name not in self._containers:
+            raise NotFound(f"no such container: {name}")
+        return self._containers[name]
+
+
+def _with_containers(containers: dict[str, _ExecContainer]):
+    """构造一个 provisioner,其 docker 客户端按名字返回给定容器。"""
+
+    class _Client:
+        def __init__(self) -> None:
+            self.containers = _Containers(containers)
+
+    provisioner = _provisioner()
+    provisioner._client = _Client()  # type: ignore[assignment]
+    return provisioner
+
+
+def _handle(name: str = "test", *, container_id: str | None = None) -> Handle:
+    """构造一个 Handle(默认不给 container_id,直接按容器名查找)。"""
+    return Handle(
+        name=name,
+        slug=name,
+        container_name=f"mc-{name}",
+        container_id=container_id,
+        volume_name=f"mc-{name}-data",
+    )
+
+
+def test_send_command_passes_command_as_single_argv_element() -> None:
+    """指令整条作为**一个参数**交给 rcon-cli(不经 shell,不会被解释成 Linux 命令)。"""
+    container = _ExecContainer()
+    provisioner = _with_containers({"mc-test": container})
+
+    provisioner.send_command(_handle(), "op Steve")
+
+    assert container.calls == [["rcon-cli", "op Steve"]]
+
+
+def test_send_command_keeps_shell_metacharacters_literal() -> None:
+    """``;`` / ``$()`` / 反引号只是普通字符,不会被容器内 shell 执行。"""
+    container = _ExecContainer()
+    provisioner = _with_containers({"mc-test": container})
+
+    provisioner.send_command(_handle(), "say hi; rm -rf /")
+
+    assert container.calls == [["rcon-cli", "say hi; rm -rf /"]]
+
+
+def test_send_command_returns_decoded_output() -> None:
+    """返回服务端输出的文本。"""
+    container = _ExecContainer(result=_ExecResult(b"Made Steve a server operator\n"))
+    provisioner = _with_containers({"mc-test": container})
+
+    assert provisioner.send_command(_handle(), "op Steve") == "Made Steve a server operator\n"
+
+
+def test_send_command_rejects_stopped_container() -> None:
+    """容器没在运行 → ProvisionError,且不会真的 exec。"""
+    container = _ExecContainer(status="exited")
+    provisioner = _with_containers({"mc-test": container})
+
+    with pytest.raises(ProvisionError, match="未在运行"):
+        provisioner.send_command(_handle(), "op Steve")
+    assert container.calls == []
+
+
+def test_send_command_rejects_missing_container() -> None:
+    """容器不存在 → ProvisionError。"""
+    provisioner = _with_containers({})
+
+    with pytest.raises(ProvisionError, match="不存在"):
+        provisioner.send_command(_handle(), "op Steve")
+
+
+def test_send_command_reports_nonzero_exit_code() -> None:
+    """rcon-cli 退出码非 0(如服务端还没起来)→ 报错并带上输出。"""
+    container = _ExecContainer(result=_ExecResult(b"Connection refused\n", exit_code=1))
+    provisioner = _with_containers({"mc-test": container})
+
+    with pytest.raises(ProvisionError, match="Connection refused"):
+        provisioner.send_command(_handle(), "op Steve")
+
+
+def test_send_command_reports_rcon_api_error() -> None:
+    """docker API 报错 → 包成 ProvisionError。"""
+
+    class _BoomContainer(_ExecContainer):
+        def exec_run(self, command: Any) -> _ExecResult:
+            raise APIError("500 Server Error")
+
+    provisioner = _with_containers({"mc-test": _BoomContainer()})
+
+    with pytest.raises(ProvisionError, match="发送命令失败"):
+        provisioner.send_command(_handle(), "op Steve")
+
+
+def test_online_players_still_works_with_shared_exec_helper() -> None:
+    """在线人数也走同一个 exec 助手(重构后行为不变)。"""
+    container = _ExecContainer(result=_ExecResult(b"There are 3 of a max of 20 players online:"))
+    provisioner = _with_containers({"mc-test": container})
+
+    assert provisioner.online_players(_handle()) == 3
+    assert container.calls == [["rcon-cli", "list"]]
+

@@ -34,6 +34,13 @@ class FakeProvisioner:
     specs: list[Spec] = field(default_factory=list)
     #: 按实例名覆盖在线人数;没列出的返回 0(``None`` = 读不到)
     player_counts: dict[str, int | None] = field(default_factory=dict)
+    #: 记录收到的游戏指令:``(实例名, 指令)``
+    commands: list[tuple[str, str]] = field(default_factory=list)
+    #: 按实例名覆盖指令输出;没列出的用 ``default_command_output``
+    command_outputs: dict[str, str] = field(default_factory=dict)
+    default_command_output: str = "ok"
+    #: 为 True 时 ``send_command`` 直接报错(模拟 RCON 不可用)
+    fail_command: bool = False
     _counter: int = 0
 
     # ---- 运行时前置 ----
@@ -91,6 +98,15 @@ class FakeProvisioner:
 
     def online_players(self, handle: Handle) -> int | None:
         return self.player_counts.get(handle.name, 0)
+
+    def send_command(self, handle: Handle, command: str) -> str:
+        container = self.containers.get(handle.container_name)
+        if container is None or container.status != "running":
+            raise ProvisionError(f"实例 {handle.name!r} 未在运行,无法发送命令")
+        self.commands.append((handle.name, command))
+        if self.fail_command:
+            raise ProvisionError("fake command failure")
+        return self.command_outputs.get(handle.name, self.default_command_output)
 
 
 @dataclass

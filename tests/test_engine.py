@@ -7,8 +7,14 @@ import pytest
 from mcctl.core.archive import ArchiveError
 from mcctl.core.config import Config
 from mcctl.core.engine import ArchiveNotFound, Engine, EngineError, InstanceConflict, InstanceNotFound
-from mcctl.core.models import CreateRequest, State
+from mcctl.core.models import (
+    CreateRequest,
+    State,
+    normalize_command,
+    validate_player_name,
+)
 from mcctl.core.store import Store
+from mcctl.provisioners.base import ProvisionError
 from tests.fakes import FakeArchiveStore, FakeProvisioner
 
 
@@ -172,6 +178,105 @@ def test_online_mode_roundtrip(engine):
     inst = eng.create(CreateRequest(name="test", online_mode=False))
     assert inst.online_mode is False
     assert eng.get("test").online_mode is False
+
+
+# ---------------------------------------------------------------- 游戏指令
+def test_send_command_strips_leading_slash(engine):
+    """``/say hi`` 与 ``say hi`` 等价(带斜杠会被去掉后原样转发)。"""
+    eng, prov = engine
+    eng.create(CreateRequest(name="test"))
+    prov.command_outputs["test"] = "hi"
+
+    assert eng.send_command("test", "/say hi") == "hi"
+    assert prov.commands == [("test", "say hi")]
+
+
+def test_send_command_sends_raw_arguments(engine):
+    """指令整体作为一个参数传给 rcon-cli(空格原样保留)。"""
+    eng, prov = engine
+    eng.create(CreateRequest(name="test"))
+    eng.send_command("test", "give Steve diamond 64")
+    assert prov.commands == [("test", "give Steve diamond 64")]
+
+
+@pytest.mark.parametrize("command", ["", "   ", "/", "say\nhi", "say hi\nsay bye"])
+def test_send_command_rejects_blank_or_multiline(engine, command):
+    """空指令 / 纯空白 / 只有斜杠 / 含换行一律拒绝,且不会真的发出去。"""
+    eng, prov = engine
+    eng.create(CreateRequest(name="test"))
+    with pytest.raises(ValueError):
+        eng.send_command("test", command)
+    assert prov.commands == []
+
+
+def test_send_command_trims_surrounding_whitespace(engine):
+    """首尾空白(含换行)会被去掉,不会因此被误判成多行命令。"""
+    eng, prov = engine
+    eng.create(CreateRequest(name="test"))
+    eng.send_command("test", "  say hi \n")
+    assert prov.commands == [("test", "say hi")]
+
+
+def test_send_command_rejects_overlong_command(engine):
+    """超长指令直接拒绝(避免误把整段文件当成指令发进去)。"""
+    eng, prov = engine
+    eng.create(CreateRequest(name="test"))
+    with pytest.raises(ValueError, match="过长"):
+        eng.send_command("test", "say " + "x" * 1000)
+    assert prov.commands == []
+
+
+def test_send_command_unknown_instance(engine):
+    """实例不存在时报 InstanceNotFound,不会碰到 provisioner。"""
+    eng, prov = engine
+    with pytest.raises(InstanceNotFound):
+        eng.send_command("nope", "say hi")
+    assert prov.commands == []
+
+
+def test_send_command_propagates_provision_error(engine):
+    """runtime 层报错(容器没在跑 / RCON 连不上)要原样冒泡。"""
+    eng, prov = engine
+    eng.create(CreateRequest(name="test"))
+    prov.fail_command = True
+    with pytest.raises(ProvisionError):
+        eng.send_command("test", "say hi")
+
+
+def test_op_sends_op_command(engine):
+    """op 会拼出 ``op <player>`` 这条指令。"""
+    eng, prov = engine
+    eng.create(CreateRequest(name="test"))
+    prov.command_outputs["test"] = "Made Steve a server operator"
+
+    assert eng.op("test", "Steve") == "Made Steve a server operator"
+    assert prov.commands == [("test", "op Steve")]
+
+
+def test_deop_sends_deop_command(engine):
+    """deop 会拼出 ``deop <player>`` 这条指令。"""
+    eng, prov = engine
+    eng.create(CreateRequest(name="test"))
+    eng.deop("test", "Steve")
+    assert prov.commands == [("test", "deop Steve")]
+
+
+@pytest.mark.parametrize("player", ["", " ", "bad name", "a" * 17, "玩家", "steve;"])
+def test_op_rejects_invalid_player_name(engine, player):
+    """非法玩家名在拼指令之前就被拦住(防注入 / 防打错)。"""
+    eng, prov = engine
+    eng.create(CreateRequest(name="test"))
+    with pytest.raises(ValueError):
+        eng.op("test", player)
+    assert prov.commands == []
+
+
+def test_command_helpers_are_idempotent():
+    """纯函数:斜杠 / 空白只去掉一层,合法玩家名原样返回。"""
+    assert normalize_command("  /say hi  ") == "say hi"
+    assert normalize_command("say hi") == "say hi"
+    assert normalize_command("//weird") == "/weird"
+    assert validate_player_name("  Notch_1  ") == "Notch_1"
 
 
 # ---------------------------------------------------------------- 归档与重建

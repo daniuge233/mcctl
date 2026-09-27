@@ -19,6 +19,7 @@ mcctl 是一个轻量的我的世界服务器管理器。在为短期、少量�
 - [快速开始](#快速开始)
 - [命令参考](#命令参考)
 - [HTTP 服务](#http-服务)
+- [游戏指令](#游戏指令)
 - [生命周期与存档](#生命周期与存档)
 - [状态机](#状态机)
 - [漂移修正](#漂移修正)
@@ -110,6 +111,9 @@ mcctl config --write             # 生成带注释的示例配置文件
 | `logs` | `<name> [-n 100]` | 查看容器日志 |
 | `endpoint` | `<name>` | 打印连接地址 |
 | `players` | `<name>` | 查询在线人数 |
+| `cmd` | `<name> <command...>` | 向游戏服务端发送一条指令, 如 `mcctl cmd test op Steve` (见下文[游戏指令](#游戏指令)) |
+| `op` | `<name> <player>` | 将玩家设为管理员 (等价于游戏指令 `op <player>`) |
+| `deop` | `<name> <player>` | 撤销玩家的管理员权限 |
 | `reconcile` | — | 比对数据库期望状态与 Docker 实际状态, 修正漂移 (见下文[漂移修正](#漂移修正)) |
 | `serve` | `[--host] [--port]` | 启动持久 HTTP 服务 (见下文) |
 | `reap` | — | 手动执行生命周期巡检 |
@@ -155,6 +159,9 @@ curl -H "Authorization: Bearer $KEY" http://127.0.0.1:8765/servers
 | `POST` | `/servers/{name}/stop` | 优雅关停 (保留容器与数据卷) |
 | `DELETE` | `/servers/{name}` | 关停 + 归档 + 删除, 响应中返回存档信息 |
 | `GET` | `/servers/{name}/logs` | 日志尾部; `?tail=100` (取值 1–5000) |
+| `POST` | `/servers/{name}/command` | 向游戏服务端发送一条指令, 返回服务端输出 |
+| `POST` | `/servers/{name}/op` | 将玩家设为管理员 |
+| `POST` | `/servers/{name}/deop` | 撤销玩家的管理员权限 |
 | `POST` | `/servers/{name}/archive` | 仅打包数据卷 (不删除实例) |
 | `GET` | `/servers/{name}/archive` | 下载存档 (`application/gzip`); 实例已删除时同样可用 |
 | `POST` | `/servers/{name}/restore` | 依据同名存档重新创建实例 |
@@ -198,6 +205,40 @@ curl -X POST http://127.0.0.1:8765/servers/test/restore -H "X-API-Key: $KEY" -d 
 
 写操作 (创建 / 重建 / 启停 / 删除 / 打包 / 丢弃) 共用同一把进程内锁, 后台巡检也使用同一把锁。因此, 创建服务器的任务**并发进入, 顺序处理**; 巡检不会中断创建过程中的实例。  
 读操作不加锁。
+
+发指令 (`command` / `op` / `deop`) **不取这把锁** —— 它不改变 mcctl 自己的状态, 若取锁会让一条慢指令堵住其它实例的创建与删除。
+
+## 游戏指令
+
+`cmd` / `op` / `deop` (HTTP 侧为 `POST /servers/{name}/command`、`/op`、`/deop`) 用于向服务器发送游戏命令发送指令。
+
+传输路径与 `players` 一致: 指令经容器内的 `rcon-cli` 通过 RCON 协议交给 Minecraft 服务端控制台。
+
+```bash
+# CLI:参数用空格分隔, 会被拼成一条指令
+mcctl cmd test op Steve
+mcctl cmd test say hello world
+
+# CLI:等价的管理员快捷方式
+mcctl op test Steve
+mcctl deop test Steve
+
+# HTTP
+curl -X POST http://127.0.0.1:8765/servers/test/command \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"command": "op Steve"}'
+
+curl -X POST http://127.0.0.1:8765/servers/test/op \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"player": "Steve"}'
+```
+
+要点:
+
+- 指令可带前导 `/` (`/op Steve`) 也可不带, 处理时会统一去掉 —— RCON 通道传输的是服务端控制台指令, 不需要 `/`。
+- 指令不能为空、不能含换行 (否则会被当成多条指令), 长度上限 512 字符。
+- `op` / `deop` 的玩家名需为 1–16 位字母 / 数字 / 下划线, 不合法直接拒绝, 不会拼进指令。
+- 实例不存在 → `404`; 实例未运行或 RCON 不可用 → `503`; 参数非法 → `422`。
 
 ## 生命周期与存档
 
@@ -546,7 +587,7 @@ mcctl --config /path/to/config.toml list   # 也可通过 --config 指定配置�
 
 - **实例容器不映射任何宿主机端口**, 仅接入 `mc-net`, 由 `mc-router` 在内网按容器名访问。因此实例模型中**不存在 `host_port` 字段**。
 - 对宿主机暴露的**唯一**端口是 router 的 `127.0.0.1:25565:25565` (可通过配置文件的 `[router] bind` / `[router] port` 修改,但始终只有一个)。
-- RCON **不开放端口**, 在线人数通过 `docker exec <container> rcon-cli list` 获取。
+- RCON **不开放端口**, 在线人数通过 `docker exec <container> rcon-cli list` 获取, 游戏指令同样经 `rcon-cli` 以参数列表形式下发。
 - 所有 `delete` 操作均清理容器与数据卷 (未来还会清理 routes / DNS); 删除前会先将数据卷归档为 `<存档目录>/<slug>.tar.gz`, 归档失败则不执行删除 (参见[生命周期与存档](#生命周期与存档))。
 - `create` 为**分步骤**执行: `分配 slug → 创建 volume → 创建容器 → 等待健康 → 写入 DB`。每一步独立记录日志且可重放, 失败后状态落为 `failed`, 而非包裹在单一 `try` 块中; 使用存档重建时, 在"创建 volume"与"创建容器"之间增加一步"解包存档"。
 

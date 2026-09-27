@@ -13,15 +13,18 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from ..core.models import slugify
+from ..core.models import COMMAND_MAX_LENGTH, normalize_command, slugify, validate_player_name
 
 __all__ = [
     "ArchiveInfo",
+    "CommandRequest",
+    "CommandResult",
     "CreateServerRequest",
     "DeleteResult",
     "HealthInfo",
     "LifecycleInfo",
     "LogsResponse",
+    "OpRequest",
     "ReapReportModel",
     "RestoreRequest",
     "ServerInfo",
@@ -112,6 +115,43 @@ class LogsResponse(BaseModel):
     name: str
     lines: int
     logs: str
+
+
+class CommandRequest(BaseModel):
+    """向游戏服务端发送一条指令。"""
+
+    command: str = Field(
+        ...,
+        min_length=1,
+        max_length=COMMAND_MAX_LENGTH,
+        description="游戏指令,可带前导 /(如 op Steve、/say hi),会自动去掉 / 与首尾空白",
+    )
+
+    @field_validator("command")
+    @classmethod
+    def _command_must_be_valid(cls, value: str) -> str:
+        """空指令 / 含换行的指令在这里就被拦掉(→ 422),同时统一去掉前导 ``/``。"""
+        return normalize_command(value)
+
+
+class OpRequest(BaseModel):
+    """设置 / 撤销某个玩家的 OP。"""
+
+    player: str = Field(..., description="玩家名(1-16 位字母 / 数字 / 下划线)")
+
+    @field_validator("player")
+    @classmethod
+    def _player_must_be_valid(cls, value: str) -> str:
+        """玩家名不合法直接 422,不把脏字符串拼进命令里。"""
+        return validate_player_name(value)
+
+
+class CommandResult(BaseModel):
+    """命令执行结果。"""
+
+    name: str = Field(..., description="服务器名")
+    command: str = Field(..., description="实际发给服务端的命令(已规范化)")
+    output: str = Field(..., description="服务端返回的文本;无响应时为空字符串")
 
 
 class LifecycleInfo(BaseModel):

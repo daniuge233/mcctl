@@ -154,3 +154,99 @@ def test_missing_explicit_config_file_gives_friendly_error(cli_env, tmp_path):
 
     assert result.exit_code == 1
     assert "不存在" in result.output
+
+
+# ------------------------------------------------------------------ 游戏指令
+def test_cmd_sends_game_command(cli_env):
+    """``mcctl cmd`` 把游戏指令转发给服务端并打印响应。"""
+    runner, provisioner, _ = cli_env(CONFIG)
+    runner.invoke(cli.app, ["create", "demo"])
+    provisioner.command_outputs["demo"] = "Broadcasted: hi"
+
+    result = runner.invoke(cli.app, ["cmd", "demo", "say", "hi"])
+
+    assert result.exit_code == 0, result.output
+    assert "Broadcasted: hi" in result.output
+    assert provisioner.commands == [("demo", "say hi")]
+
+
+def test_cmd_accepts_leading_slash(cli_env):
+    """带 / 的写法也接受(内部去掉斜杠,RCON 通道不需要)。"""
+    runner, provisioner, _ = cli_env(CONFIG)
+    runner.invoke(cli.app, ["create", "demo"])
+
+    result = runner.invoke(cli.app, ["cmd", "demo", "/op", "Steve"])
+
+    assert result.exit_code == 0, result.output
+    assert provisioner.commands == [("demo", "op Steve")]
+
+
+def test_cmd_reports_empty_command(cli_env):
+    """空指令 → 友好报错(退出码 1),不会发出去。"""
+    runner, provisioner, _ = cli_env(CONFIG)
+    runner.invoke(cli.app, ["create", "demo"])
+
+    result = runner.invoke(cli.app, ["cmd", "demo", "   "])
+
+    assert result.exit_code == 1
+    assert "命令不能为空" in result.output
+    assert provisioner.commands == []
+
+
+def test_cmd_unknown_instance_gives_friendly_error(cli_env):
+    """实例不存在 → 退出码 1 + 中文提示。"""
+    runner, _, _ = cli_env(CONFIG)
+
+    result = runner.invoke(cli.app, ["cmd", "ghost", "say", "hi"])
+
+    assert result.exit_code == 1
+    assert "不存在" in result.output
+
+
+def test_op_sends_op_command(cli_env):
+    """``mcctl op`` 等价于发送 ``op <player>``。"""
+    runner, provisioner, _ = cli_env(CONFIG)
+    runner.invoke(cli.app, ["create", "demo"])
+    provisioner.command_outputs["demo"] = "Made Steve a server operator"
+
+    result = runner.invoke(cli.app, ["op", "demo", "Steve"])
+
+    assert result.exit_code == 0, result.output
+    assert "Made Steve a server operator" in result.output
+    assert provisioner.commands == [("demo", "op Steve")]
+
+
+def test_deop_sends_deop_command(cli_env):
+    """``mcctl deop`` 等价于发送 ``deop <player>``。"""
+    runner, provisioner, _ = cli_env(CONFIG)
+    runner.invoke(cli.app, ["create", "demo"])
+
+    result = runner.invoke(cli.app, ["deop", "demo", "Steve"])
+
+    assert result.exit_code == 0, result.output
+    assert provisioner.commands == [("demo", "deop Steve")]
+
+
+def test_op_rejects_invalid_player(cli_env):
+    """非法玩家名 → 退出码 1,不会发出去。"""
+    runner, provisioner, _ = cli_env(CONFIG)
+    runner.invoke(cli.app, ["create", "demo"])
+
+    result = runner.invoke(cli.app, ["op", "demo", "bad name"])
+
+    assert result.exit_code == 1
+    assert "玩家名" in result.output
+    assert provisioner.commands == []
+
+
+def test_op_maps_rcon_failure_to_friendly_error(cli_env):
+    """RCON 不可用 → 退出码 1 + 中文提示。"""
+    runner, provisioner, _ = cli_env(CONFIG)
+    runner.invoke(cli.app, ["create", "demo"])
+    provisioner.fail_command = True
+
+    result = runner.invoke(cli.app, ["op", "demo", "Steve"])
+
+    assert result.exit_code == 1
+    assert "错误" in result.output
+
